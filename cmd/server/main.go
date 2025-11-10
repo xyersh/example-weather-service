@@ -17,41 +17,49 @@ import (
 
 const (
 	httpPort = ":3000"
+	city     = "moscow"
 )
+
+type Reading struct {
+	Timestamp  time.Time
+	Temprature float64
+}
+
+type Storage struct {
+	data map[string][]Reading
+	mu   sync.RWMutex
+}
+
+func NewStorage() *Storage {
+	return &Storage{
+		data: make(map[string][]Reading, 1000),
+	}
+}
 
 func main() {
 	wg := sync.WaitGroup{}
 
-	httpClient := &http.Client{
-		Timeout: time.Second * 10,
-	}
-
-	geocodingClient := geocoding.NewClient(httpClient)
-	openMeteoClient := open_meteo.NewClient(httpClient)
+	storage := NewStorage()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Get("/{city}", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("storage	.data: %v\n", storage.data)
+		cityName := chi.URLParam(r, "city")
+		log.Printf("city is %s\n", cityName)
 
-		city := chi.URLParam(r, "city")
-		log.Printf("city is %s", city)
-
-		// находим коордынаты переданного в запросе города
-		geoRes, err := geocodingClient.GetCoords(city)
-		if err != nil {
-			log.Println(err)
+		storage.mu.RLock()
+		reading, ok := storage.data[cityName]
+		log.Printf("reading = %v\n", reading)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("not found"))
 			return
 		}
-
-		// по найденым координатам получаем погоду из ресурса open_meteo.com
-		openMeteoRes, err := openMeteoClient.GetTemperature(geoRes.Latitude, geoRes.Longitude)
-		if err != nil {
-			log.Println(err)
-			return
-		}
+		storage.mu.RUnlock()
 
 		// маршалим ответ в байтовый срез
-		raw, err := json.Marshal(openMeteoRes)
+		raw, err := json.Marshal(reading)
 		if err != nil {
 			log.Println(err)
 		}
@@ -69,7 +77,7 @@ func main() {
 		panic(err)
 	}
 
-	_, err = initJobs(shed)
+	_, err = initJobs(shed, storage)
 	if err != nil {
 		panic(err)
 	}
@@ -98,9 +106,15 @@ func initCron() (gocron.Scheduler, error) {
 	return s, nil
 }
 
-func initJobs(shed gocron.Scheduler) ([]gocron.Job, error) {
+func initJobs(shed gocron.Scheduler, storage *Storage) ([]gocron.Job, error) {
 	log.Println("initJobs - START")
 	// add a job to the scheduler
+	httpClient := &http.Client{
+		Timeout: time.Second * 10,
+	}
+
+	geocodingClient := geocoding.NewClient(httpClient)
+	openMeteoClient := open_meteo.NewClient(httpClient)
 
 	j, err := shed.NewJob(
 		gocron.DurationJob(
@@ -108,7 +122,36 @@ func initJobs(shed gocron.Scheduler) ([]gocron.Job, error) {
 		),
 		gocron.NewTask(
 			func() {
-				fmt.Printf("%v hello\n", time.Now())
+
+				// находим координаты переданного в запросе города
+				geoRes, err := geocodingClient.GetCoords(city)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+
+				// по найденым координатам получаем погоду из ресурса open_meteo.com
+				openMeteoRes, err := openMeteoClient.GetTemperature(geoRes.Latitude, geoRes.Longitude)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+
+				// сохранение данных по расписанию в in-memoty
+				storage.mu.Lock()
+				defer storage.mu.Unlock()
+				timeStamp, err := time.Parse("2006-01-02T15:04", openMeteoRes.Current.Time)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+
+				storage.data[city] = append(storage.data[city], Reading{
+					// "time": "2025-11-09T06:00",
+					Timestamp:  timeStamp,
+					Temprature: openMeteoRes.Current.Temperature2m,
+				})
+				log.Printf("in cache: %v\n", storage.data)
 			},
 		),
 	)

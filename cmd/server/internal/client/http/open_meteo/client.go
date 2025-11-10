@@ -3,6 +3,7 @@ package open_meteo
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 )
 
@@ -24,6 +25,8 @@ func NewClient(httpClient *http.Client) *client {
 }
 
 func (c *client) GetTemperature(lat float64, lon float64) (Response, error) {
+	log.Printf("GetTemperature STARTS with params: lat=%f, lon=%f\n", lat, lon)
+
 	resp, err := c.httpClient.Get(
 		fmt.Sprintf("https://api.open-meteo.com/v1/forecast/?latitude=%f&longitude=%f&current=temperature_2m",
 			lat,
@@ -44,6 +47,7 @@ func (c *client) GetTemperature(lat float64, lon float64) (Response, error) {
 	result := Response{}
 
 	err = json.NewDecoder(resp.Body).Decode(&result)
+	log.Printf("result is %v\n", result)
 	if err != nil {
 		return Response{}, err
 	}
